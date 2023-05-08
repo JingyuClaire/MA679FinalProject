@@ -1,0 +1,756 @@
+---
+title: "Analysis on Environmental Impact of Agro-photovoltaics on Agricultural Land"
+author: "Jing Wu, Jingyu Liang, Ruiyi Feng"
+date: "2023-05-07"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r, echo=FALSE, warning=FALSE, message=FALSE, results='hide'} 
+# Install the required packages
+library(randomForest)
+library(caret)
+library(tidyverse)
+library(pROC)
+```
+
+# Introduction
+This project examines the impact of agro-photovoltaic systems on soil quality near installation sites. We divided the data into groups by geography, obtained soil quality data and selected control groups from nearby areas. We fitted a random forest model for each data group and used a confusion matrix to check the accuracy of each model. 
+
+# Data processing
+This project aims to analyze the soil quality near solar system installations and assess any potential impact on agriculture. We extracted soil data from the REST ISRIC API by querying soil layer properties within a specified longitude and latitude range to achieve this. 
+
+We combined the installation data obtained from a public database with the crop farm grid data from CropScape. By setting the minimum distance to 30 meters, we identified solar system installations that were located close to farmlands. Initially, we had intended to use air quality data. Still, the data available from Fort Collins needed to be more comprehensive to determine whether the agro-photovoltaic systems affected air quality.
+
+Then we divided all sites into several groups, and for each distance setting, we selected four control groups at distances of approximately 250 meters, 350 meters, and 500 meters from the installation location. To avoid redundancy in the data, we cleaned up any points that fell within the same grid by randomly retaining one data point and discarding the rest.
+
+Overall, our methodology involves extracting soil data from a remote API and merging it with public data sets to analyze the impact of solar system installations on agricultural land. The data processing includes cleaning up redundant data points and identifying relevant installations close to farmland.
+
+# Modeling
+
+# Read the dataset
+We first read the data of 4 groups separately, calling them A, B, C, and D. Then we cleaned and organized the data to let us fit the model to each of them. In this case, we have four datasets and fit a random forest model to every dataset. All the datasets have the same column names. The response variable is solar, a binary variable representing whether the region has a solar panel. Class 0: there is no solar panel; class 1: there is a solar panel. Other columns in the cleaned dataset are the predictors.
+```{r, echo=FALSE}
+# read data and transform solar into string and put NA into 0
+df.a <- readxl::read_xlsx("soil_solar_data_A.xlsx")
+df.a <- df.a %>% mutate(solar = as.character(solar), 
+                   capacity = ifelse(is.na(capacity), 0, capacity))
+
+df.b <- readxl::read_xlsx("soil_solar_data_B.xlsx")
+df.b <- df.b %>% mutate(solar = as.character(solar), 
+                   capacity = ifelse(is.na(capacity), 0, capacity))
+
+df.c <- readxl::read_xlsx("soil_solar_data_C.xlsx")
+df.c <- df.c %>% mutate(solar = as.character(solar), 
+                   capacity = ifelse(is.na(capacity), 0, capacity))
+
+df.d <- readxl::read_xlsx("soil_solar_data_D.xlsx")
+df.d <- df.d %>% mutate(solar = as.character(solar), 
+                   capacity = ifelse(is.na(capacity), 0, capacity))
+
+```
+
+
+# Fitting the random forest model for group A
+
+## Step 1:  data cleaning
+We clean the data to fit the model. In this Step, We need to change the type of columns into the type that is suitable for random forest model. We also need to dummify variables into "0" and "1". Then, we scale some numerical variables to make the model more accurate. Finally, we drop the useless columns.
+```{r, echo=FALSE}
+set.seed (1)
+# fit a model for certain group
+df <- df.a
+data_used <- df %>% pivot_wider(names_from = property, values_from = values.mean)
+
+# convert solar and label variables to factor
+data_used$solar <- factor(data_used$solar)
+
+# dummify the label variable
+cm0_5 <- ifelse(data_used$label == '0-5cm', 1, 0)
+cm5_15 <- ifelse(data_used$label == '5-15cm', 1, 0)
+cm30_60 <- ifelse(data_used$label == '30-60cm', 1, 0)
+cm100_200 <- ifelse(data_used$label == '100-200cm', 1, 0)
+
+data_used <- bind_cols(data.frame(cm0_5 = cm0_5,
+                     cm5_15 = cm5_15,
+                     cm30_60 = cm30_60,
+                     cm100_200 = cm100_200),data_used)
+
+numeric_vars <- c("bdod", "cec", "cfvo", "clay", "nitrogen", 
+                  "ocd", "phh2o","sand", "silt", "soc")
+
+# Scale numeric variables
+data_used[numeric_vars] <- scale(data_used[numeric_vars])
+
+# drop the unnecessary columns
+# data_used is the dataset we finally will use to build a model.
+drop <- c("lon","lat","capacity","group", "label")
+data_used <- data_used[,!(names(data_used) %in% drop)]
+```
+
+After the data cleaning, here are the variables we will use to fit the model.
+
+## Dataset Description
+**cm0_5**: soil layer 0-5 cm below the ground surface (0 = no; 1 = yes).<br />
+**cm5_15**: soil layer 5-15 cm below the ground surface (0 = no; 1 = yes).<br />
+**cm30_60**:  soil layer 30-60 cm below the ground surface (0 = no; 1 = yes).<br />
+**cm100_200**: soil layer 100-200 cm below the ground surface (0 = no; 1 = yes).<br />
+**solar**:  has a solar panel or not (0 = no; 1 = yes).<br />
+**bdod**: bulk density of soil.<br />
+**cec**: cation exchange capacity.<br />
+**cfvo**: coefficient of variation of field capacity.<br />
+**clay**: percentage of clay particles in soil.<br />
+**nitrogen**: amount of nitrogen in soil.<br />
+**ocd**: organic carbon density.<br />     
+**phh2o**: pH value of soil in water.<br /> 
+**sand**: percentage of sand particles in soil.<br />
+**silt**: percentage of silt particles in soil.<br />
+**soc**: soil organic carbon
+
+## Step 2: split into training data and testing data
+We split 70% of the data into training data and 30% into testing data. We use the training data to build the model and the testing data to test the model. 
+We create a random forest model and fit it to the training dataset.
+```{r, echo=FALSE}
+set.seed(200)
+train_idx <- sample(1:nrow(data_used), 0.7 * nrow(data_used))
+train_data <- data_used[train_idx,]
+test_data <- data_used[-train_idx,]
+```
+
+
+## Step 3:  fit the default random forest model
+```{r}
+rf_model <- randomForest(solar ~ ., data = train_data, importance = TRUE)
+
+print(rf_model)
+```
+According to the model summary, the type of random forest is classified, and the number of trees to grow is 500 for each model. We limit the number of predictors that should be considered for each split of the tree to 3. The error rate of group A is 10.69%. 
+
+## Step 4: plot the AUC curve
+According to the result and the plot, we have an AUC value of 0.73. The AUC value indicates the model's ability to rank positive and negative instances correctly. It suggests that the default model has moderate to good discriminatory power. It performs better than random guessing and can correctly distinguish between the positive and negative classes with an accuracy of 73%.
+```{r, echo=FALSE, message=FALSE}
+# Predict probabilities for the positive class
+predicted_probs <- predict(rf_model, newdata = test_data, type = "prob")[, "1"]
+
+# Compute ROC curve
+roc_obj <- roc(test_data$solar, predicted_probs)
+
+# Plot ROC curve
+plot(roc_obj, main = "Receiver Operating Characteristic (ROC) Curve",
+     xlab = "False Positive Rate", ylab = "True Positive Rate")
+
+# Add AUC value to the plot
+text(0.5, 0.3, paste("AUC =", round(auc(roc_obj), 2)), cex = 1.2, col = "red")
+
+# Add diagonal reference line
+abline(a = 0, b = 1, lty = 2, col = "gray")
+
+# Add legend
+legend("bottomright", legend = c("Model"), lty = 1, col = "black", bg = "white")
+
+```
+
+
+## Step 5: prediction on testing data
+We use the model to predict the testing data. According to the output, the accuracy is 0.9825, which means that the model predicted the correct class for 98.25% of the test cases. This accuracy is good for our prediction.
+```{r, echo=FALSE}
+rf_pred <- predict(rf_model, newdata = test_data, type= "class") 
+confusionMatrix(table(rf_pred,test_data$solar)) # The prediction to compute the confusion matrix and see the accuracy score
+```
+
+
+## Step 6: Tuning the paramter
+After making the default random forest model, we tune the parameter ourselves to see if we can improve the model. In the plot below, we have the highest accuracy when mtry = 5, which means 5 predictors should be considered for each tree split. Then we put this parameter into our new model.
+```{r, echo=FALSE, results='hide'}
+mtry <- sqrt(ncol(train_data))
+
+#ntree: Number of trees to grow.
+ntree <- 3
+
+control <- trainControl(method='repeatedcv', 
+                        number=10, 
+                        repeats=3,
+                        search = 'random')
+
+rf_random <- train(solar ~ .,
+                   data = train_data,
+                   method = 'rf',
+                   metric = 'Accuracy',
+                   tuneLength  = 15, 
+                   trControl = control)
+print(rf_random)
+
+```
+```{r, echo=FALSE}
+plot(rf_random)
+
+# the highest accuracy appears when mtry = 5, then we fit the model again using 
+# mtry = 5
+```
+
+
+## Step 7: re-fit the model with mtry = 5
+```{r, echo=FALSE}
+rf_newmodel <- randomForest(solar ~ ., data = train_data, mtry = 5, importance = TRUE)
+
+print(rf_newmodel)
+```
+According to the summary of the new model, the type of random forest is classification, and the number of trees to grow is 500 for each model. We limit the number of predictors that should be considered for each split of the tree to 5. The error rate of group A is 11.45%, which is a little greater than the error rates of the default model. 
+
+## Step 8: plot the AUC curve for the new model
+ 
+```{r, echo = FALSE, message=FALSE}
+# Predict probabilities for the positive class
+predicted_probs <- predict(rf_newmodel, newdata = test_data, type = "prob")[, "1"]
+
+# Compute ROC curve
+roc_obj <- roc(test_data$solar, predicted_probs)
+
+# Plot ROC curve
+plot(roc_obj, main = "Receiver Operating Characteristic (ROC) Curve",
+     xlab = "False Positive Rate", ylab = "True Positive Rate")
+
+# Add AUC value to the plot
+text(0.5, 0.3, paste("AUC =", round(auc(roc_obj), 2)), cex = 1.2, col = "red")
+
+# Add diagonal reference line
+abline(a = 0, b = 1, lty = 2, col = "gray")
+
+# Add legend
+legend("bottomright", legend = c("Model"), lty = 1, col = "black", bg = "white")
+
+```
+We draw the new AUC curve for the new model to assist us in comparing models. 
+Then we find the AUC value is 0.73, which is the same as the default model.
+
+## Step 9: prediction on testing data
+Then we predict the test dataset by using the new model. According to the output, the accuracy is 0.9825, which means that the model predicted the correct class for 96.49% of the test cases. In this case, the default model has the better accuracy. 
+```{r, echo = FALSE}
+rf_pred <- predict(rf_newmodel, newdata = test_data, type= "class") 
+confusionMatrix(table(rf_pred,test_data$solar)) # The prediction to compute the confusion matrix and see the accuracy score
+```
+
+
+## Step 10: Look at variable importance of the default model
+Since we found that the default model is better than the new model, we will use the default model to find out which variables are most related to our response: whether this place has a solar panel. 
+```{r, echo=FALSE}
+round(importance(rf_model), 2)
+varImpPlot(rf_model)
+```
+These two plots show two parameters that represent the importance of variables. The larger the value of parameters, the more important the variable is. Based on the plots, cfvo and ocd are most related to solar panels in group A.
+
+
+# Fitting the random forest model for group B
+Then we perform the same process for group A.
+
+## Step 1:  data cleaning
+We did the Same as group A.
+```{r, echo=FALSE}
+set.seed (1)
+# fit a model for certain group
+df <- df.b
+data_used <- df %>% pivot_wider(names_from = property, values_from = values.mean)
+
+# convert solar and label variables to factor
+data_used$solar <- factor(data_used$solar)
+
+# dummify the label variable
+cm0_5 <- ifelse(data_used$label == '0-5cm', 1, 0)
+cm5_15 <- ifelse(data_used$label == '5-15cm', 1, 0)
+cm30_60 <- ifelse(data_used$label == '30-60cm', 1, 0)
+cm100_200 <- ifelse(data_used$label == '100-200cm', 1, 0)
+
+data_used <- bind_cols(data.frame(cm0_5 = cm0_5,
+                     cm5_15 = cm5_15,
+                     cm30_60 = cm30_60,
+                     cm100_200 = cm100_200),data_used)
+
+numeric_vars <- c("bdod", "cec", "cfvo", "clay", "nitrogen", 
+                  "ocd", "phh2o","sand", "silt", "soc")
+
+# Scale numeric variables
+data_used[numeric_vars] <- scale(data_used[numeric_vars])
+
+# drop the unnecessary columns
+drop <- c("lon","lat","capacity","group", "label")
+data_used <- data_used[,!(names(data_used) %in% drop)]
+```
+
+
+## Step 2: split into training data and testing data
+Also the same as group A.
+```{r, echo = FALSE}
+set.seed(200)
+train_idx <- sample(1:nrow(data_used), 0.7 * nrow(data_used))
+train_data <- data_used[train_idx,]
+test_data <- data_used[-train_idx,]
+```
+
+
+## Step 3:  fit the default random forest model
+```{r}
+rf_model <- randomForest(solar ~ ., data = train_data, importance = TRUE)
+
+print(rf_model)
+```
+According to the summary of model, the type of random forest is classification, and the number of trees to grow is 500 for each model. We limit the number of predictors that should be considered for each split of the tree as 3. The error rates of group B is 7.61%. 
+
+## Step 4: plot the AUC curve
+According to the result and the plot, we have an AUC value of 1. An AUC value of 1 in a random forest model indicates a perfect model that perfectly distinguishes between the positive and negative classes. The model has an ideal classification performance, achieving perfect discrimination between the two classes.
+It is important to note that obtaining an AUC value of 1 in the training data does not necessarily guarantee perfect classification performance on unseen test data. It could be due to overfitting the training data, which may result in poor generalization performance on new data. Therefore, evaluating the model's performance on independent test data is essential to assess its practical utility.
+```{r, echo=FALSE, message=FALSE}
+# Predict probabilities for the positive class
+predicted_probs <- predict(rf_model, newdata = test_data, type = "prob")[, "1"]
+
+# Compute ROC curve
+roc_obj <- roc(test_data$solar, predicted_probs)
+
+# Plot ROC curve
+plot(roc_obj, main = "Receiver Operating Characteristic (ROC) Curve",
+     xlab = "False Positive Rate", ylab = "True Positive Rate")
+
+# Add AUC value to the plot
+text(0.5, 0.3, paste("AUC =", round(auc(roc_obj), 2)), cex = 1.2, col = "red")
+
+# Add diagonal reference line
+abline(a = 0, b = 1, lty = 2, col = "gray")
+
+# Add legend
+legend("bottomright", legend = c("Model"), lty = 1, col = "black", bg = "white")
+
+```
+
+
+## Step 5: prediction on testing data
+We use the model to predict the testing data. According to the output, the accuracy is 1, which means that the model predicted the correct class for 100% of the test cases. 
+An accuracy of 1 in a random forest model when predicting the testing data may indicate that the model is overfitting to the training data. We also consider this because we need more data to fit the model, and we need to find more new, unseen data.
+```{r,echo=FALSE}
+rf_pred <- predict(rf_model, newdata = test_data, type= "class") 
+confusionMatrix(table(rf_pred,test_data$solar)) # The prediction to compute the confusion matrix and see the accuracy score
+```
+
+
+## Step 6: Tuning the paramter
+After making the default random forest model, we tune the parameter ourselves to see if we can improve the model. In the plot below, we have the highest accuracy when mtry = 2, which means two predictors should be considered for each tree split. Then we put this parameter into our new model.
+```{r, echo = FALSE, warning=FALSE, results='hide'}
+mtry <- sqrt(ncol(train_data))
+
+#ntree: Number of trees to grow.
+ntree <- 3
+
+control <- trainControl(method='repeatedcv', 
+                        number=10, 
+                        repeats=3,
+                        search = 'random')
+
+rf_random <- train(solar ~ .,
+                   data = train_data,
+                   method = 'rf',
+                   metric = 'Accuracy',
+                   tuneLength  = 15, 
+                   trControl = control)
+print(rf_random)
+
+```
+
+```{r,echo=FALSE}
+plot(rf_random)
+
+# the highest accuracy appears when mtry = 2, then we fit the model again using 
+# mtry = 2
+```
+
+
+## Step 7: re-fit the model with mtry = 2
+```{r}
+rf_newmodel <- randomForest(solar ~ ., data = train_data, mtry = 2, importance = TRUE)
+
+print(rf_newmodel)
+```
+According to the summary of the new model, the type of random forest is classification, and the number of trees to grow is 500 for each model. We limit the number of predictors that should be considered for each split of the tree to 2. The error rate of group B is 7.61%, which is the same as the error rate of the default model. 
+
+## Step 8: plot the AUC curve
+
+```{r, echo=FALSE, message = FALSE}
+# Predict probabilities for the positive class
+predicted_probs <- predict(rf_newmodel, newdata = test_data, type = "prob")[, "1"]
+
+# Compute ROC curve
+roc_obj <- roc(test_data$solar, predicted_probs)
+
+# Plot ROC curve
+plot(roc_obj, main = "Receiver Operating Characteristic (ROC) Curve",
+     xlab = "False Positive Rate", ylab = "True Positive Rate")
+
+# Add AUC value to the plot
+text(0.5, 0.3, paste("AUC =", round(auc(roc_obj), 2)), cex = 1.2, col = "red")
+
+# Add diagonal reference line
+abline(a = 0, b = 1, lty = 2, col = "gray")
+
+# Add legend
+legend("bottomright", legend = c("Model"), lty = 1, col = "black", bg = "white")
+
+```
+We draw the new AUC curve for the new model to assist us in comparing models. 
+Then we find the AUC value is 1, which is the same as the default model.
+
+## Step 9: prediction on testing data
+Then we predict the test dataset by using the new model. According to the output, the accuracy is 1, meaning the model predicted the correct class for 100% of the test cases. In this case, the default and new models are similar based on the accuracy and error rate.
+```{r, echo=FALSE}
+rf_pred <- predict(rf_newmodel, newdata = test_data, type= "class") 
+confusionMatrix(table(rf_pred,test_data$solar)) # The prediction to compute the confusion matrix and see the accuracy score
+```
+
+
+## Step 10: Look at variable importance of the new model
+Since we found that the default model is better than the new model, we will use the default model to find out which variables are most related to our response: whether this place has a solar panel. 
+```{r, echo=FALSE}
+round(importance(rf_newmodel), 2)
+varImpPlot(rf_newmodel)
+```
+These two plots show two parameters that represent the importance of variables. The larger the value of parameters, the more influential the variable is. Based on the plots, we found that bdod and cec are most related to solar panels in group B.
+
+# Fitting the random forest model for group C
+Then we perform the same process for group A and B.
+
+## Step 1:  data cleaning
+We did the Same as group A and B.
+```{r, echo=FALSE}
+set.seed (1)
+# fit a model for certain group
+df <- df.c
+data_used <- df %>% pivot_wider(names_from = property, values_from = values.mean)
+
+# convert solar and label variables to factor
+data_used$solar <- factor(data_used$solar)
+
+# dummify the label variable
+cm0_5 <- ifelse(data_used$label == '0-5cm', 1, 0)
+cm5_15 <- ifelse(data_used$label == '5-15cm', 1, 0)
+cm30_60 <- ifelse(data_used$label == '30-60cm', 1, 0)
+cm100_200 <- ifelse(data_used$label == '100-200cm', 1, 0)
+
+data_used <- bind_cols(data.frame(cm0_5 = cm0_5,
+                     cm5_15 = cm5_15,
+                     cm30_60 = cm30_60,
+                     cm100_200 = cm100_200),data_used)
+
+numeric_vars <- c("bdod", "cec", "cfvo", "clay", "nitrogen", 
+                  "ocd", "phh2o","sand", "silt", "soc")
+
+# Scale numeric variables
+data_used[numeric_vars] <- scale(data_used[numeric_vars])
+
+# drop the unnecessary columns
+drop <- c("lon","lat","capacity","group", "label")
+data_used <- data_used[,!(names(data_used) %in% drop)]
+```
+
+
+## Step 2: split into training data and testing data
+Also the same as group A and B.
+```{r,echo=FALSE}
+set.seed(200)
+train_idx <- sample(1:nrow(data_used), 0.7 * nrow(data_used))
+train_data <- data_used[train_idx,]
+test_data <- data_used[-train_idx,]
+```
+
+
+## Step 3:  fit the default random forest model
+```{r}
+rf_model <- randomForest(solar ~ ., data = train_data, importance = TRUE)
+
+print(rf_model)
+```
+According to the summary of model, the type of random forest is classification, and the number of trees to grow is 500 for each model. We limit the number of predictors that should be considered for each split of the tree to 3. The error rate of group C is 6.49%, which is acceptable.
+
+## Step 4: plot the AUC curve
+According to the result and the plot, we have an AUC value of 0.88. It suggests that the default model has moderate to good discriminatory power. It performs better than random guessing and can correctly distinguish between the positive and negative classes with an accuracy of 88%.
+```{r, echo=FALSE, message=FALSE}
+# Predict probabilities for the positive class
+predicted_probs <- predict(rf_model, newdata = test_data, type = "prob")[, "1"]
+
+# Compute ROC curve
+roc_obj <- roc(test_data$solar, predicted_probs)
+
+# Plot ROC curve
+plot(roc_obj, main = "Receiver Operating Characteristic (ROC) Curve",
+     xlab = "False Positive Rate", ylab = "True Positive Rate")
+
+# Add AUC value to the plot
+text(0.5, 0.3, paste("AUC =", round(auc(roc_obj), 2)), cex = 1.2, col = "red")
+
+# Add diagonal reference line
+abline(a = 0, b = 1, lty = 2, col = "gray")
+
+# Add legend
+legend("bottomright", legend = c("Model"), lty = 1, col = "black", bg = "white")
+
+```
+
+
+## Step 5: prediction on testing data
+We use the model to predict the testing data. According to the output, the accuracy is 0.9697, which means the model predicted the correct class for 96.97% of the test cases. This accuracy is good for our prediction.
+```{r, echo=FALSE}
+rf_pred <- predict(rf_model, newdata = test_data, type= "class") 
+confusionMatrix(table(rf_pred,test_data$solar)) # The prediction to compute the confusion matrix and see the accuracy score
+```
+
+
+## Step 6: Tuning the paramter
+After making the default random forest model, we tune the parameter ourselves to see if we can improve the model. In the plot below, we have the highest accuracy when mtry = 5, which means 5 predictors should be considered for each tree split. Then we put this parameter into our new model.
+```{r, echo=FALSE, results='hide'}
+mtry <- sqrt(ncol(train_data))
+
+#ntree: Number of trees to grow.
+ntree <- 3
+
+control <- trainControl(method='repeatedcv', 
+                        number=10, 
+                        repeats=3,
+                        search = 'random')
+
+rf_random <- train(solar ~ .,
+                   data = train_data,
+                   method = 'rf',
+                   metric = 'Accuracy',
+                   tuneLength  = 15, 
+                   trControl = control)
+print(rf_random)
+
+```
+
+```{r, echo=FALSE}
+plot(rf_random)
+
+# the highest accuracy appears when mtry = 5, then we fit the model again using 
+# mtry = 5
+```
+
+
+## Step 7: re-fit the model with mtry = 5
+```{r}
+rf_newmodel <- randomForest(solar ~ ., data = train_data, mtry = 5, importance = TRUE)
+
+print(rf_newmodel)
+```
+According to the summary of the new model, the type of random forest is classification, and the number of trees to grow is 500 for each model. We limit the number of predictors that should be considered for each split of the tree to 5. The error rate of group C is 6.49%, which is the same as the default model. 
+
+## Step 8: plot the AUC curve
+
+```{r, echo=FALSE, message=FALSE}
+# Predict probabilities for the positive class
+predicted_probs <- predict(rf_newmodel, newdata = test_data, type = "prob")[, "1"]
+
+# Compute ROC curve
+roc_obj <- roc(test_data$solar, predicted_probs)
+
+# Plot ROC curve
+plot(roc_obj, main = "Receiver Operating Characteristic (ROC) Curve",
+     xlab = "False Positive Rate", ylab = "True Positive Rate")
+
+# Add AUC value to the plot
+text(0.5, 0.3, paste("AUC =", round(auc(roc_obj), 2)), cex = 1.2, col = "red")
+
+# Add diagonal reference line
+abline(a = 0, b = 1, lty = 2, col = "gray")
+
+# Add legend
+legend("bottomright", legend = c("Model"), lty = 1, col = "black", bg = "white")
+
+```
+We draw the new AUC curve for the new model to assist us in comparing models. 
+Then we find the AUC value is 0.87, which is less than the default model.
+
+## Step 9: prediction on testing data
+Then we predict the test dataset by using the new model. According to the output, the accuracy is 0.9394, which means that the model predicted the correct class for 93.94% of the test cases. In this case, the default model has the better accuracy. 
+```{r, echo=FALSE}
+rf_pred <- predict(rf_newmodel, newdata = test_data, type= "class") 
+confusionMatrix(table(rf_pred,test_data$solar)) # The prediction to compute the confusion matrix and see the accuracy score
+```
+
+
+## Step 10: Look at variable importance of the default model
+Since we found that the default model is better than the new model, we will use the default model to find out which variables are most related to our response: whether this place has a solar panel. 
+```{r, echo=FALSE}
+round(importance(rf_model), 2)
+varImpPlot(rf_model)
+```
+These two plots show two parameters that represent the importance of variables. The larger the value of parameters, the more important the variable is. Based on the plots, sand, soc, and clay are most related to solar panels in group C.
+
+# Fitting the random forest model for group D
+Then we perform the same process for group A, B and C.
+
+## Step 1:  data cleaning
+We did the Same as group A, B, and C.
+```{r, echo=FALSE}
+set.seed (1)
+# fit a model for certain group
+df <- df.d
+data_used <- df %>% pivot_wider(names_from = property, values_from = values.mean)
+
+# convert solar and label variables to factor
+data_used$solar <- factor(data_used$solar)
+
+# dummify the label variable
+cm0_5 <- ifelse(data_used$label == '0-5cm', 1, 0)
+cm5_15 <- ifelse(data_used$label == '5-15cm', 1, 0)
+cm30_60 <- ifelse(data_used$label == '30-60cm', 1, 0)
+cm100_200 <- ifelse(data_used$label == '100-200cm', 1, 0)
+
+data_used <- bind_cols(data.frame(cm0_5 = cm0_5,
+                     cm5_15 = cm5_15,
+                     cm30_60 = cm30_60,
+                     cm100_200 = cm100_200),data_used)
+
+numeric_vars <- c("bdod", "cec", "cfvo", "clay", "nitrogen", 
+                  "ocd", "phh2o","sand", "silt", "soc")
+
+# Scale numeric variables
+data_used[numeric_vars] <- scale(data_used[numeric_vars])
+
+# drop the unnecessary columns
+drop <- c("lon","lat","capacity","group", "label")
+data_used <- data_used[,!(names(data_used) %in% drop)]
+```
+
+
+## Step 2: split into training data and testing data
+Also the same as group A, B, and C.
+```{r, echo=FALSE}
+set.seed(200)
+train_idx <- sample(1:nrow(data_used), 0.7 * nrow(data_used))
+train_data <- data_used[train_idx,]
+test_data <- data_used[-train_idx,]
+```
+
+
+## Step 3:  fit the default random forest model
+```{r}
+rf_model <- randomForest(solar ~ ., data = train_data, importance = TRUE)
+
+print(rf_model)
+```
+According to the summary of the model, the type of random forest is classification, and the number of trees to grow is 500 for each model. We limit the number of predictors that should be considered for each split of the tree to 3. The error rate of group D is 19.1%, which is a bit high. So, we should tune the parameters.
+
+## Step 4: plot the AUC curve
+According to the result and the plot, we have an AUC value of 0.75. It performs better than random guessing and can correctly distinguish between the positive and negative classes with an accuracy of 0.75%. It suggests that the default model has moderate to good discriminatory power.
+```{r, echo=FALSE, message=FALSE}
+# Predict probabilities for the positive class
+predicted_probs <- predict(rf_model, newdata = test_data, type = "prob")[, "1"]
+
+# Compute ROC curve
+roc_obj <- roc(test_data$solar, predicted_probs)
+
+# Plot ROC curve
+plot(roc_obj, main = "Receiver Operating Characteristic (ROC) Curve",
+     xlab = "False Positive Rate", ylab = "True Positive Rate")
+
+# Add AUC value to the plot
+text(0.5, 0.3, paste("AUC =", round(auc(roc_obj), 2)), cex = 1.2, col = "red")
+
+# Add diagonal reference line
+abline(a = 0, b = 1, lty = 2, col = "gray")
+
+# Add legend
+legend("bottomright", legend = c("Model"), lty = 1, col = "black", bg = "white")
+
+```
+
+
+## Step 5: prediction on testing data
+We use the model to predict the testing data. According to the output, the accuracy is 0.8718, which means that the model predicted the correct class for 87.187% of the test cases. This accuracy is good for our prediction.
+```{r, echo=FALSE}
+rf_pred <- predict(rf_model, newdata = test_data, type= "class") 
+confusionMatrix(table(rf_pred,test_data$solar)) # The prediction to compute the confusion matrix and see the accuracy score
+```
+accuracy: 0.87
+
+## Step 6: Tuning the paramter
+After making the default random forest model, we tune the parameter ourselves to see if we can improve the model. In the plot below, we have the highest accuracy when mtry = 1, which means one predictor should be considered for each tree split. Then we put this parameter into our new model.```{r, echo=FALSE, results='hide'}
+mtry <- sqrt(ncol(train_data))
+
+#ntree: Number of trees to grow.
+ntree <- 3
+
+control <- trainControl(method='repeatedcv', 
+                        number=10, 
+                        repeats=3,
+                        search = 'random')
+
+rf_random <- train(solar ~ .,
+                   data = train_data,
+                   method = 'rf',
+                   metric = 'Accuracy',
+                   tuneLength  = 15, 
+                   trControl = control)
+print(rf_random)
+
+```
+
+```{r,echo=FALSE}
+plot(rf_random)
+
+# the highest accuracy appears when mtry = 5, then we fit the model again using 
+# mtry = 1
+```
+
+
+## Step 7: re-fit the model with mtry = 1
+According to the summary of the new model, the type of random forest is classification, and the number of trees to grow is 500 for each model. We limit the number of predictors that should be considered for each split of the tree to 1. The error rate of group D is 16.85%, which is less than the default model.
+```{r}
+rf_newmodel <- randomForest(solar ~ ., data = train_data, mtry = 1, importance = TRUE)
+
+print(rf_newmodel)
+```
+
+
+## Step 8: plot the AUC curve
+
+```{r, echo=FALSE, message=FALSE}
+# Predict probabilities for the positive class
+predicted_probs <- predict(rf_newmodel, newdata = test_data, type = "prob")[, "1"]
+
+# Compute ROC curve
+roc_obj <- roc(test_data$solar, predicted_probs)
+
+# Plot ROC curve
+plot(roc_obj, main = "Receiver Operating Characteristic (ROC) Curve",
+     xlab = "False Positive Rate", ylab = "True Positive Rate")
+
+# Add AUC value to the plot
+text(0.5, 0.3, paste("AUC =", round(auc(roc_obj), 2)), cex = 1.2, col = "red")
+
+# Add diagonal reference line
+abline(a = 0, b = 1, lty = 2, col = "gray")
+
+# Add legend
+legend("bottomright", legend = c("Model"), lty = 1, col = "black", bg = "white")
+
+```
+We draw the new AUC curve for the new model to assist us in comparing models.
+Then we find the AUC value is 0.8, which is greater than the default model.
+
+## Step 9: prediction on testing data
+Then we predict the test dataset by using the new model. According to the output, the accuracy is 0.8718, which means that the model predicted the correct class for 87.18% of the test cases. In this case, the default model has the same accuracy as the default model. 
+Based on the AUC value, accuracy, and error rate, we found that the new model is better than the default model because it has a larger AUC value and less error rate than the default model while the accuracy remains the same.
+```{r, echo=FALSE}
+rf_pred <- predict(rf_newmodel, newdata = test_data, type= "class") 
+confusionMatrix(table(rf_pred,test_data$solar)) # The prediction to compute the confusion matrix and see the accuracy score
+```
+accuracy: 0.87
+
+## Step 10: Look at variable importance of the new model
+Since we found that the default model is better than the new model, we will use the default model to find out which variables are most related to our response: whether this place has a solar panel. 
+```{r, echo=FALSE}
+round(importance(rf_newmodel), 2)
+varImpPlot(rf_newmodel)
+```
+These two plots are showing two parameters that represent the importance of variables. The larger the value of parameters, the more important the variable is. Based on the plots, we found that cfvo and sand are most related to solar panels in group D.
+
+
+# Conclusion
+Based on the above modelling, certain soil qualities are more related to solar panels. In group A, cfvo and ocd are most closely related to agro-photovoltaic; in group B: bdod, cec, and cfvo are most closely associated with agro-photovoltaic; in group C, sand, soc, and clay are most closely related to agro-photovoltaic; in group D: cfvo, sand, and ocd are most closely related to agro-photovoltaic. In conclusion, cfvo, soc, sand, and clay are most closely related to agro-photovoltaic. 
