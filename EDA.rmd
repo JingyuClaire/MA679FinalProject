@@ -1,0 +1,89 @@
+---
+title: "EDA"
+author: "Jingyu Liang"
+date: "2023-05-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# read the data
+```{r}
+df <- readxl::read_xlsx("soil_solar_data.xlsx")
+df <- df %>% mutate(solar = as.character(solar), 
+                   capacity = ifelse(is.na(capacity), 0, capacity))
+head(df)
+```
+
+# Have or have not solar
+```{r}
+solarrows <- grep("1", df$solar)
+ggplot(data=df[solarrows,], aes(x=property, y=values.mean, fill=property)) +
+  geom_boxplot()+
+  labs(title = "has solar")
+ggplot(data=df[-solarrows,], aes(x=property, y=values.mean, fill=property)) +
+  geom_boxplot()+
+  labs(title = "no solar")
+```
+
+# solar or not for different property
+```{r}
+property <- c("bdod","cec","cfvo","clay","nitrogen","ocd","phh2o","sand","silt","soc")
+plots <- list()
+for (i in 1:length(property)){
+  prop <- df %>% slice(grep(property[i], df$property))
+  plot <- ggplot(data=prop, aes(x=solar, y=values.mean, fill=solar)) +
+    geom_boxplot()+
+    labs(title = property[i]) 
+  plots[[i]] <- plot
+}
+#plots
+grid.arrange(plots[[1]], plots[[2]], plots[[3]], plots[[4]], plots[[5]], ncol = 2) 
+```
+
+
+```{r}
+grid.arrange(plots[[6]], plots[[7]], plots[[8]], plots[[9]], plots[[10]], ncol = 2)
+
+```
+
+# label
+```{r}
+plots <- list()
+label <- unique(df$label)
+property <- unique(df$property)
+j <- 10
+  for (i in 1:length(label)){
+  deep <- df %>% slice(grep(property[j],df$property))  %>% 
+    slice(grep(label[i], df$label))
+  plot <- ggplot(data=deep, aes(x=solar, y=values.mean, fill=solar)) +
+    geom_boxplot()+
+    labs(title = paste(label[i],property[j]))
+  plots[[i]] <- plot
+}
+
+#plots
+grid.arrange(plots[[1]], plots[[2]], plots[[3]], plots[[4]], ncol = 2)
+```
+
+
+```{r}
+plots <- list()
+property <- unique(df$property)
+j <- 8
+  for (i in 1:length(label)){
+  deep <- df %>% slice(grep(property[j],df$property))  %>% 
+    slice(grep(label[i], df$label))
+  plot <- ggplot(data=deep, aes(x=values.mean, fill=solar)) +
+    geom_histogram()+
+    labs(title = paste(label[i],property[j]))
+  plots[[i]] <- plot
+}
+
+#plots
+grid.arrange(plots[[1]], plots[[2]], plots[[3]], plots[[4]], ncol = 2)
+
+```
+
